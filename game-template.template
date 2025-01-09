@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Enhanced Number Guessing Game Infrastructure'
+
+Parameters:
+  StageName:
+    Type: String
+    Default: 'prod'
+    Description: 'API Gateway stage name'
+  
+  S3BucketName:
+    Type: String
+    Description: 'S3 bucket containing Lambda function code'
+  
+  S3Key:
+    Type: String
+    Description: 'S3 key for Lambda function code (ZIP file)'
+    
+  UserPoolName:
+    Type: String
+    Default: 'GameUserPool'
+    Description: 'Cognito User Pool name'
+
+Resources:
+  # Cognito User Pool
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Ref UserPoolName
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  # Cognito User Pool Client
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub ${AWS::StackName}-client
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      
+  # SNS Topic for High Scores
+  HighScoreTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${AWS::StackName}-high-scores
+      
+  # SSM Parameter for Game Configuration
+  GameConfig:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /game/config
+      Type: String
+      Value: '{"min": 1, "max": 100}'
+      Description: Game configuration parameters
+
+  # CloudWatch Dashboard
+  GameDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${AWS::StackName}-dashboard
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [["GameMetrics", "AttemptsToWin", "Statistics", "Average"]],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Average Attempts to Win"
+              }
+            }
+          ]
+        }
+
+  # DynamoDB Table for storing scores
+  ScoresTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-scores
+      AttributeDefinitions:
+        - AttributeName: player_name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: player_name
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # Lambda Function
+  GameFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-game
+      Runtime: python3.12
+      Handler: game.lambda_handler
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Ref S3Key
+      Environment:
+        Variables:
+          SCORES_TABLE: !Ref ScoresTable
+          SNS_TOPIC_ARN: !Ref HighScoreTopic
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 10
+
+  # Enhanced Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GameFunctionAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: !GetAtt ScoresTable.Arn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref HighScoreTopic
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/game/config
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # API Gateway with Cognito Authorizer
+  GameAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${AWS::StackName}-api
+      Description: API for Number Guessing Game
+
+  # Cognito Authorizer
+  CognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: CognitoAuthorizer
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      RestApiId: !Ref GameAPI
+      ProviderARNs:
+        - !GetAtt UserPool.Arn
+
+  # API Gateway Resources
+  GameResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref GameAPI
+      ParentId: !GetAtt GameAPI.RootResourceId
+      PathPart: 'game'
+
+  GameMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GameAPI
+      ResourceId: !Ref GameResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GameFunction.Arn}/invocations
+
+  # API Gateway Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - GameMethod
+    Properties:
+      RestApiId: !Ref GameAPI
+
+  # API Gateway Stage
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiDeployment
+      RestApiId: !Ref GameAPI
+      StageName: !Ref StageName
+
+  # Lambda Permission for API Gateway
+  LambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GameFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GameAPI}/*/*/*
+
+Outputs:
+  ApiEndpoint:
+    Description: API Endpoint URL
+    Value: !Sub https://${GameAPI}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/game
+  
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+
+  HighScoreTopicArn:
+    Description: SNS Topic ARN for high scores
+    Value: !Ref HighScoreTopic

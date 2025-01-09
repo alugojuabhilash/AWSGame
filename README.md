@@ -1,9 +1,11 @@
-Number Guessing Game Documentation
-Overview
+**Number Guessing Game Documentation**
+
+**Overview**
+
 A serverless number guessing game built using AWS services where players try to guess a randomly generated number between 1 and 100.
 
-Architecture
-AWS Services Used
+**Architecture**
+**AWS Services Used**
 AWS Lambda - Game logic execution
 
 Amazon DynamoDB - Score storage
@@ -25,10 +27,6 @@ class Game:
         self.scores_table = dynamodb.Table(os.environ['SCORES_TABLE'])
         self.sns_topic_arn = os.environ['SNS_TOPIC_ARN']
 
-Copy
-
-Insert at cursor
-python
 Main components:
 
 Game configuration management
@@ -44,7 +42,7 @@ High score notifications
 Metrics recording
 
 2. Game Flow
-Start Game
+**Start Game**
 
 # No request body needed
 # Returns:
@@ -54,11 +52,8 @@ Start Game
     "leaderboard": []
 }
 
-Copy
 
-Insert at cursor
-python
-Make Guess
+**Make Guess**
 
 # Request:
 {
@@ -75,10 +70,7 @@ Make Guess
     "gameId": "75"
 }
 
-Copy
 
-Insert at cursor
-python
 3. Features
 Persistent leaderboard
 
@@ -128,22 +120,13 @@ Resources:
   GameUserPool:
     Type: AWS::Cognito::UserPool
 
-Copy
 
-Insert at cursor
-yaml
-API Endpoints
+**API Endpoints**
 POST /game
-Start New Game (no body)
+**Start New Game (no body)**
 
 curl -X POST https://api-endpoint/game \
 -H "Authorization: Bearer YOUR_ID_TOKEN"
-
-Copy
-
-Insert at cursor
-bash
-Make Guess
 
 curl -X POST https://api-endpoint/game \
 -H "Authorization: Bearer YOUR_ID_TOKEN" \
@@ -154,18 +137,15 @@ curl -X POST https://api-endpoint/game \
     "attempts": 0
 }'
 
-Copy
 
-Insert at cursor
-bash
-Environment Variables
+**Environment Variables**
 SCORES_TABLE - DynamoDB table name
 
 SNS_TOPIC_ARN - SNS topic ARN for notifications
 
 CORS_ORIGIN - Allowed CORS origins
 
-Game Logic
+**Game Logic**
 Player starts new game (receives target number)
 
 Player makes guess:
@@ -180,7 +160,7 @@ Score saved when player wins
 
 High score notification if attempts ≤ 5
 
-Error Handling
+**Error Handling**
 Invalid input validation
 
 Authentication errors
@@ -189,14 +169,14 @@ Service errors
 
 CORS handling
 
-Metrics and Monitoring
+**Metrics and Monitoring**
 CloudWatch metrics for attempts
 
 Logging for debugging
 
 High score notifications
 
-Security
+**Security**
 Cognito user authentication
 
 API Gateway authorization
@@ -214,7 +194,7 @@ Set up API Gateway
 
 Configure Cognito
 
-Test endpoints
+**Test endpoints**
 
 Testing
 # Start new game
@@ -231,11 +211,8 @@ curl -X POST https://api-endpoint/game \
     "attempts": 0
 }'
 
-Copy
 
-Insert at cursor
-bash
-Future Improvements
+**Future Improvements**:
 Multiple difficulty levels
 
 Time-based scoring
@@ -244,4 +221,3 @@ Multiplayer support
 
 Achievement system
 
-Daily/Weekly challenges

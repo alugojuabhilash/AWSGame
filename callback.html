@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Number Guessing Game</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+    <div class="game-container">
+        <header class="header">
+            <div class="logo">
+                <h1>Number Quest</h1>
+            </div>
+            <div class="user-controls">
+                <button id="signOut" class="btn btn-outline">Sign Out</button>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <div class="game-section">
+                <div class="game-panel">
+                    <div class="game-status">
+                        <div class="status-item">
+                            <span class="status-label">Attempts</span>
+                            <span id="attempts" class="status-value">0</span>
+                        </div>
+                        <button id="startGame" class="btn btn-primary">Start New Game</button>
+                    </div>
+
+                    <div id="game-area" class="game-play-area" style="display: none;">
+                        <div class="input-group">
+                            <input type="number" 
+                                   id="guessInput" 
+                                   class="guess-input" 
+                                   placeholder="Enter your guess"
+                                   min="1" 
+                                   max="100">
+                            <button id="submitGuess" class="btn btn-submit">Submit</button>
+                        </div>
+                        <div id="game-response" class="game-message"></div>
+                    </div>
+                </div>
+
+                <div class="leaderboard-section">
+                    <div id="leaderboard" class="leaderboard"></div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>© 2024 Number Quest. All rights reserved.</p>
+        </footer>
+    </div>
+
+
+    <script type="module">
+        import { Auth } from './js/auth.js';
+        import { Game } from './js/game.js';
+
+        const game = new Game();
+
+        function updateAttemptsDisplay() {
+            document.getElementById('attempts').textContent = `Attempts: ${game.attempts}`;
+        }
+
+        // Initialize event listeners
+        document.getElementById('signOut').addEventListener('click', Auth.signOut);
+        
+        document.getElementById('startGame').addEventListener('click', async () => {
+            try {
+                await game.startGame();
+                updateAttemptsDisplay();
+            } catch (error) {
+                console.error('Error starting game:', error);
+            }
+        });
+
+        document.getElementById('submitGuess').addEventListener('click', async () => {
+            const guessInput = document.getElementById('guessInput');
+            const guess = parseInt(guessInput.value);
+            
+            if (isNaN(guess)) {
+                document.getElementById('game-response').innerHTML = 'Please enter a valid number.';
+                return;
+            }
+            
+            try {
+                await game.makeGuess(guess);
+                updateAttemptsDisplay();
+                guessInput.value = ''; // Clear input after guess
+                guessInput.focus(); // Focus for next guess
+            } catch (error) {
+                console.error('Error making guess:', error);
+            }
+        });
+
+        // Add enter key support
+        document.getElementById('guessInput').addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                document.getElementById('submitGuess').click();
+            }
+        });
+
+        // Handle auth callback and initialize game
+        window.onload = async function() {
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const code = urlParams.get('code');
+                if (code) {
+                    await Auth.exchangeCodeForTokens(code);
+                    document.getElementById('game-controls').style.display = 'block';
+                    
+                    if (!game.checkExistingGame()) {
+                        await game.startGame();
+                    }
+                    updateAttemptsDisplay();
+                }
+            } catch (error) {
+                console.error('Callback error:', error);
+                document.getElementById('token-display').innerHTML = `Error: ${error.message}`;
+            }
+        };
+    </script>
+</body>
+</html>

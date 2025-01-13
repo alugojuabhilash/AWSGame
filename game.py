@@ -43,9 +43,19 @@ class Game:
 
     def save_score(self, player_name, attempts, timestamp):
         try:
+            # Create a short name from email
+            short_name = player_name.split('@')[0]  # Gets the part before @
+            # Optional: Make it even shorter by taking first 8 chars
+            display_name = short_name[:8] + "..." if len(short_name) > 8 else short_name
+            
+            # Create a userId from player_name and timestamp
+            user_id = f"{player_name}_{timestamp}"
+            
             self.scores_table.put_item(
                 Item={
-                    'player_name': player_name,
+                    'userId': user_id,
+                    'player_name': player_name,  # Original email
+                    'display_name': display_name,  # Short name for display
                     'attempts': attempts,
                     'timestamp': timestamp
                 }
@@ -53,7 +63,7 @@ class Game:
             
             # Publish high score notification if attempts is low
             if attempts <= 5:
-                self.publish_high_score(player_name, attempts)
+                self.publish_high_score(display_name, attempts)  # Use display_name here
                 
             # Send metrics to CloudWatch
             self.record_metrics(attempts)
@@ -64,6 +74,26 @@ class Game:
     def get_leaderboard(self):
         try:
             response = self.scores_table.scan(
+                ProjectionExpression="display_name, attempts",  # Changed to display_name
+                Limit=10
+            )
+            # Convert Decimal to int for attempts
+            items = response['Items']
+            for item in items:
+                if isinstance(item.get('attempts'), Decimal):
+                    item['attempts'] = int(item['attempts'])
+            
+            # Sort by attempts in ascending order
+            sorted_items = sorted(items, key=lambda x: x['attempts'])
+            logger.info(f"Leaderboard items: {sorted_items}")
+            return sorted_items
+        except Exception as e:
+            logger.error(f"Error getting leaderboard: {str(e)}")
+            return []
+
+    def get_leaderboard1(self):
+        try:
+            response = self.scores_table.scan(
                 ProjectionExpression="player_name, attempts",
                 Limit=10
             )
@@ -72,7 +102,11 @@ class Game:
             for item in items:
                 if isinstance(item.get('attempts'), Decimal):
                     item['attempts'] = int(item['attempts'])
-            return sorted(items, key=lambda x: x['attempts'])
+            
+            # Sort by attempts in ascending order
+            sorted_items = sorted(items, key=lambda x: x['attempts'])
+            logger.info(f"Leaderboard items: {sorted_items}")
+            return sorted_items
         except Exception as e:
             logger.error(f"Error getting leaderboard: {str(e)}")
             return []
@@ -104,18 +138,15 @@ class Game:
             logger.error(f"Error recording metrics: {str(e)}")
 
 def lambda_handler(event, context):
-    game = Game()
-    
     # Define CORS headers
     cors_headers = {
         'Access-Control-Allow-Origin': os.environ.get('CORS_ORIGIN', '*'),
         'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-        'Access-Control-Allow-Methods': 'OPTIONS,POST,GET',
+        'Access-Control-Allow-Methods': 'OPTIONS,POST',
         'Access-Control-Allow-Credentials': 'true'
     }
     
-    # Log API request
-    logger.info(f"Received event: {json.dumps(event)}")
+    game = Game()
     
     try:
         # Handle OPTIONS request for CORS
@@ -126,7 +157,7 @@ def lambda_handler(event, context):
                 'body': json.dumps({'message': 'OK'})
             }
 
-        # Verify user is authenticated
+        # Get player info from Cognito authorizer
         if 'requestContext' not in event or 'authorizer' not in event['requestContext']:
             return {
                 'statusCode': 401,
@@ -134,41 +165,53 @@ def lambda_handler(event, context):
                 'body': json.dumps({'message': 'Unauthorized'})
             }
 
-        # Get player info from Cognito authorizer
         try:
             player_name = event['requestContext']['authorizer']['claims']['email']
+            logger.info(f"Player authenticated: {player_name}")
         except KeyError:
             logger.error("Unable to get player email from claims")
             player_name = "anonymous"
 
-        # Check if this is a new game request (no body) or a guess
-        if 'body' not in event or not event['body']:
-            # Start new game
-            config = game.get_game_config()
+        # Parse request body
+        body = {}
+        if event.get('body'):
+            body = json.loads(event['body'])
+            logger.info(f"Request body: {body}")
+
+        # Check if this is a new game request or a guess
+        if not body:  # New game request
+            # Generate new target number
             target_number = game.generate_number()
-            logger.info(f"New game started with target number: {target_number}")
+            config = game.get_game_config()
             
             return {
                 'statusCode': 200,
                 'headers': cors_headers,
                 'body': json.dumps({
-                    'message': f'Welcome to the Number Guessing Game! I have selected a number between {config["min"]} and {config["max"]}.',
-                    'gameId': str(target_number),
+                    'message': f'Game started! Guess a number between {config["min"]} and {config["max"]}.',
+                    'gameId': str(target_number),  # Store target as gameId
                     'leaderboard': game.get_leaderboard()
                 }, cls=DecimalEncoder)
             }
-        
-        # Handle guess
-        try:
-            body = json.loads(event['body'])
+        else:  # This is a guess
             guess = int(body.get('guess', 0))
             target = int(body.get('gameId', 0))
-            attempts = int(body.get('attempts', 0)) + 1
-            
+            attempts = int(body.get('attempts', 1))
+
             logger.info(f"Player: {player_name}, Guess: {guess}, Target: {target}, Attempts: {attempts}")
 
+            # Validate target number
+            if target == 0:
+                return {
+                    'statusCode': 400,
+                    'headers': cors_headers,
+                    'body': json.dumps({
+                        'message': 'Invalid game state. Please start a new game.'
+                    })
+                }
+
+            # Compare guess with target
             if guess == target:
-                # Save score when player wins
                 game.save_score(player_name, attempts, datetime.now().isoformat())
                 message = f'Congratulations! You found the number {target} in {attempts} attempts!'
                 game_over = True
@@ -179,33 +222,25 @@ def lambda_handler(event, context):
                 message = f'Try lower! Your guess ({guess}) is too high.'
                 game_over = False
 
-            response_body = {
-                'message': message,
-                'attempts': attempts,
-                'gameOver': game_over,
-                'leaderboard': game.get_leaderboard() if game_over else None,
-                'lastGuess': guess,
-                'gameId': str(target)
-            }
-
             return {
                 'statusCode': 200,
                 'headers': cors_headers,
-                'body': json.dumps(response_body, cls=DecimalEncoder)
+                'body': json.dumps({
+                    'message': message,
+                    'attempts': attempts,
+                    'gameOver': game_over,
+                    'leaderboard': game.get_leaderboard() if game_over else None,
+                    'gameId': str(target)
+                }, cls=DecimalEncoder)
             }
-            
-        except (ValueError, TypeError, json.JSONDecodeError) as e:
-            logger.error(f"Error processing guess: {str(e)}")
-            return {
-                'statusCode': 400,
-                'headers': cors_headers,
-                'body': json.dumps({'message': 'Invalid guess format'})
-            }
-        
+
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         return {
             'statusCode': 500,
             'headers': cors_headers,
-            'body': json.dumps({'message': f'Internal server error: {str(e)}'})
+            'body': json.dumps({
+                'message': f'Internal server error: {str(e)}'
+            })
         }
+
